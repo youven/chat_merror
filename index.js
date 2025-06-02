@@ -1,31 +1,28 @@
-const path = require('path'); // يجب أن يكون قبل dotenv
-require('dotenv').config({ path: path.join(__dirname, '.env') });
-const dotenvResult = require('dotenv').config({ path: path.join(__dirname, '.env') });
-console.log('📂 dotenv loaded:', dotenvResult);
-const dotenvPath = path.join(__dirname, '.env');
-console.log('📄 dotenv path:', dotenvPath);
-
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const fs = require('fs');
 
-console.log('🔍 GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
+// ✅ لا حاجة لقراءة ملف .env يدوياً في Render، بل تُحقن تلقائياً
+// إذا كنت تعمل محلياً فقط، يمكنك إبقاء السطر التالي:
+require('dotenv').config();
 
-// حمل المسار من متغير البيئة
-const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+// 🔍 عرض محتوى المتغير للتأكيد
+console.log('🔍 Using FIREBASE_CREDENTIALS:', !!process.env.FIREBASE_CREDENTIALS);
 
-// تأكد من وجود الملف
-if (!fs.existsSync(serviceAccountPath)) {
-  throw new Error(`❌ ملف المفتاح غير موجود في: ${serviceAccountPath}`);
+// ✅ استخدم JSON مباشرة من المتغير البيئي
+let serviceAccount;
+try {
+  serviceAccount = JSON.parse(process.env.FIREBASE_CREDENTIALS);
+} catch (err) {
+  throw new Error('❌ تعذر تحميل بيانات firebase: تأكد من أن المتغير البيئي FIREBASE_CREDENTIALS يحتوي JSON صالح.');
 }
 
-
-
-// حمّل المفتاح
-const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+// ✅ تهيئة Firebase Admin
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
 
 // تهيئة Firebase Admin
 admin.initializeApp({
