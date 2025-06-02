@@ -1,13 +1,40 @@
+const path = require('path'); // يجب أن يكون قبل dotenv
+require('dotenv').config({ path: path.join(__dirname, '.env') });
+const dotenvResult = require('dotenv').config({ path: path.join(__dirname, '.env') });
+console.log('📂 dotenv loaded:', dotenvResult);
+const dotenvPath = path.join(__dirname, '.env');
+console.log('📄 dotenv path:', dotenvPath);
+
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const admin = require('firebase-admin');
-const serviceAccount = require('./serviceAccountKey.json'); // Place your Firebase service account file here
+const fs = require('fs');
 
+console.log('🔍 GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
+
+// حمل المسار من متغير البيئة
+const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+
+// تأكد من وجود الملف
+if (!fs.existsSync(serviceAccountPath)) {
+  throw new Error(`❌ ملف المفتاح غير موجود في: ${serviceAccountPath}`);
+}
+
+
+
+// حمّل المفتاح
+const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, 'utf8'));
+
+// تهيئة Firebase Admin
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
+  credential: admin.credential.cert(serviceAccount),
+  databaseURL: "https://chat-d40b8-default-rtdb.firebaseio.com"
 });
+
+// باقي الكود...
+
 
 const app = express();
 const httpServer = createServer(app);
@@ -194,16 +221,65 @@ io.on('connection', (socket) => {
                 });
             } else {
                 // Recipient is offline, send via FCM
-                console.log('📱 Recipient offline, sending FCM notification');
+                console.log('\n📱 Recipient offline, sending FCM notification');
                 try {
-                    await sendChatNotificationToUser(
-                        data.recipientUid,
-                        data.senderName || 'New message',
-                        data.content
-                    );
-                    console.log('✅ FCM notification sent');
+                    // Get recipient's FCM token from database
+                    const userRef = admin.database().ref(`users/${data.recipientUid}`);
+                    const snapshot = await userRef.once('value');
+                    const userData = snapshot.val();
+                    
+                    console.log('\n📱 FCM Token Check:');
+                    console.log('├─ User ID:', data.recipientUid);
+                    console.log('├─ User Data:', userData ? 'Found' : 'Not found');
+                    console.log('└─ FCM Token:', userData?.fcmToken ? 'Present' : 'Missing');
+                    
+                    if (userData && userData.fcmToken) {
+                        const message = {
+                            token: userData.fcmToken,
+                            notification: {
+                                title: data.senderName || 'New message',
+                                body: data.content
+                            },
+                            data: {
+                                messageId: data.id,
+                                senderId: data.senderUid,
+                                type: 'chat_message',
+                                chatId: data.id,
+                                timestamp: Date.now().toString()
+                            },
+                            android: {
+                                priority: 'high',
+                                notification: {
+                                    channelId: 'chat_messages',
+                                    priority: 'high',
+                                    defaultSound: true,
+                                    icon: '@mipmap/ic_launcher',
+                                    clickAction: 'FLUTTER_NOTIFICATION_CLICK'
+                                }
+                            }
+                        };
+
+                        console.log('\n📤 Sending FCM Message:');
+                        console.log('├─ To Token:', userData.fcmToken.substring(0, 20) + '...');
+                        console.log('├─ Title:', message.notification.title);
+                        console.log('├─ Body:', message.notification.body);
+                        console.log('└─ Channel:', message.android.notification.channelId);
+
+                        const response = await admin.messaging().send(message);
+                        console.log('\n✨ FCM Success:');
+                        console.log('├─ Message ID:', response);
+                        console.log('└─ Timestamp:', new Date().toISOString());
+                    } else {
+                        console.error('❌ No FCM token found for recipient');
+                    }
                 } catch (error) {
-                    console.error('❌ FCM Error:', error);
+                    console.error('\n❌ FCM Error:');
+                    console.error('├─ Type:', error.code || 'Unknown');
+                    console.error('├─ Message:', error.message);
+                    if (error.errorInfo) {
+                        console.error('├─ Details:', error.errorInfo);
+                    }
+                    console.error('└─ Stack:', error.stack);
                 }
                 
                 // Still send success to sender
@@ -241,9 +317,20 @@ io.on('connection', (socket) => {
         }
 
         try {
-            const success = await updateFcmToken(userId, token);
-            console.log(success ? '✅ FCM token registered successfully' : '❌ FCM token registration failed');
-            socket.emit('fcmTokenResponse', { success });
+            // Update in memory
+            fcmTokens.set(userId, token);
+            
+            // Update in Firebase Realtime Database
+            const userRef = admin.database().ref(`users/${userId}`);
+            await userRef.update({
+                fcmToken: token,
+                lastSeen: admin.database.ServerValue.TIMESTAMP,
+                tokenUpdateTime: admin.database.ServerValue.TIMESTAMP,
+                deviceType: 'android'
+            });
+            
+            console.log('✅ FCM token registered successfully');
+            socket.emit('fcmTokenResponse', { success: true });
             
             // If this is a new user joining, update their socket mapping
             if (!userSockets.has(userId)) {
